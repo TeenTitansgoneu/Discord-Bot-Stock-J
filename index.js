@@ -70,8 +70,8 @@ client.once('ready', () => {
   });
 
   initializeData().then(() => {
-    scheduleStockCheck();
-    setInterval(checkWeatherLoop, 30 * 1000);
+    scheduleStockCheck();           // Stock-Check mit Start-Verzögerung
+    setInterval(checkWeatherLoop, 30 * 1000); // Wetter alle 30 Sekunden prüfen
   });
 });
 
@@ -81,27 +81,19 @@ client.on('interactionCreate', async interaction => {
   if (interaction.commandName === 'stock') {
     try {
       await interaction.deferReply();
-
       const [stockData, weatherData] = await Promise.all([
         fetchData('stock'),
         fetchData('weather'),
       ]);
-
       const stockEmbed = buildStockEmbed(stockData);
       const weatherEmbed = buildWeatherEmbed(weatherData.weather);
-
       await interaction.editReply({ embeds: [stockEmbed, weatherEmbed] });
     } catch (error) {
       console.error('❌ Error handling /stock command:', error);
-      try {
-        if (interaction.deferred || interaction.replied) {
-          await interaction.followUp('⚠️ Unable to fetch data right now. Please try again later.');
-        } else {
-          await interaction.reply('⚠️ Unable to fetch data right now. Please try again later.');
-        }
-      } catch (replyError) {
-        console.error('❌ Failed to send error message:', replyError);
-      }
+      const msg = '⚠️ Unable to fetch data right now. Please try again later.';
+      interaction.replied || interaction.deferred
+        ? await interaction.followUp(msg)
+        : await interaction.reply(msg);
     }
   }
 });
@@ -126,33 +118,33 @@ async function initializeData() {
   }
 }
 
-// Stock alle 5 Minuten + 30 Sekunden prüfen (zeitgesteuert)
+// Stock-Check: erstmal 30 Sek warten, dann alle 5 Min + 30 Sek
 function scheduleStockCheck() {
-  const now = new Date();
-  const nextFiveMin = new Date(now);
-
-  nextFiveMin.setMilliseconds(0);
-  nextFiveMin.setSeconds(0);
-  nextFiveMin.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
-  nextFiveMin.setSeconds(nextFiveMin.getSeconds() + 30);
-
-  const delay = nextFiveMin.getTime() - now.getTime();
-
-  console.log(`⏳ Next stock check in ${Math.round(delay / 1000)} seconds at ${nextFiveMin.toLocaleTimeString()}`);
-
+  console.log('⏳ Erste Stock-Überprüfung in 30 Sekunden');
   setTimeout(async () => {
     await checkStockUpdate();
-    scheduleStockCheck();
+    scheduleRecurringStockCheck();
+  }, 30 * 1000);
+}
+function scheduleRecurringStockCheck() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setMilliseconds(0);
+  next.setSeconds(30);
+  next.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
+  let delay = next.getTime() - now.getTime();
+  if (delay < 0) delay += 5 * 60 * 1000;
+  console.log(`⏳ Nächste Stock-Überprüfung in ${Math.round(delay/1000)} Sek (um ${next.toLocaleTimeString()})`);
+  setTimeout(async () => {
+    await checkStockUpdate();
+    scheduleRecurringStockCheck();
   }, delay);
 }
-
 async function checkStockUpdate() {
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
     if (!channel) throw new Error('Channel not found');
-
     const stockData = await fetchData('stock');
-
     if (!isEqual(lastStockData, stockData)) {
       await channel.send({ embeds: [buildStockEmbed(stockData)] });
       lastStockData = stockData;
@@ -165,84 +157,67 @@ async function checkStockUpdate() {
   }
 }
 
-// Wetter Loop alle 30 Sekunden
+// Wetter-Loop mit Debug-Logs
 async function checkWeatherLoop() {
+  console.log('🔄 Running weather check loop...');
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
-    if (!channel) throw new Error('Channel not found');
-
+    console.log('🌐 Channel fetched:', channel?.id ?? 'null');
     const weatherData = await fetchData('weather');
+    console.log('🌦️ Fetched weather data:', weatherData.weather);
+    console.log('🌤️ Last weather data:', lastWeatherData);
 
     if (!isEqual(lastWeatherData, weatherData.weather)) {
       lastWeatherData = weatherData.weather;
+      console.log('🌦️ Weather changed – sending message...');
       await sendSingleWeatherEmbed(channel, weatherData.weather);
       console.log('🌦️ New weather detected & message sent.');
+    } else {
+      console.log('🌤️ Weather unchanged, no message sent.');
     }
   } catch (error) {
     console.error('❌ Weather check error:', error);
   }
 }
 
-// Wetter-Embed für Slash Command
+// Embeds & Vergleich wie gehabt:
+
 function buildWeatherEmbed(weather) {
-  let weatherDescriptions = [];
-
+  const desc = [];
   if (Array.isArray(weather)) {
-    for (const w of weather) {
-      if (typeof w === 'string') {
-        const emoji = emojis.weather[w] ?? '🌤️';
-        weatherDescriptions.push(`${emoji} **${w}**`);
-      }
-    }
-  } else if (typeof weather === 'object' && weather !== null) {
-    for (const key in weather) {
-      if (weather[key] && typeof key === 'string') {
-        const emoji = emojis.weather[key] ?? '🌤️';
-        weatherDescriptions.push(`${emoji} **${key}**`);
-      }
-    }
+    for (const w of weather) if (typeof w === 'string') desc.push(`${emojis.weather[w] ?? '🌤️'} **${w}**`);
+  } else if (weather && typeof weather === 'object') {
+    for (const key in weather) if (weather[key]) desc.push(`${emojis.weather[key] ?? '🌤️'} **${key}**`);
   } else if (typeof weather === 'string') {
-    const emoji = emojis.weather[weather] ?? '🌤️';
-    weatherDescriptions.push(`${emoji} **${weather}**`);
+    desc.push(`${emojis.weather[weather] ?? '🌤️'} **${weather}**`);
   } else {
-    weatherDescriptions.push('🌤️ **Unknown Weather**');
+    desc.push('🌤️ **No Weather Data**');
   }
-
-  if (weatherDescriptions.length === 0) {
-    weatherDescriptions.push('🌤️ **No Weather Data**');
-  }
-
+  
   return new EmbedBuilder()
     .setTitle('☁️ Weather Status')
-    .setDescription(weatherDescriptions.join('\n'))
+    .setDescription(desc.length ? desc.join('\n') : '🌤️ **No Weather Data**')
     .setColor('#87CEEB')
     .setTimestamp();
 }
 
-// Einzelnen Wetter-Embed senden (bei Änderung)
 async function sendSingleWeatherEmbed(channel, weather) {
-  let activeWeather = '';
+  console.log('🌦️ Sending weather embed for:', weather);
+  let active = '';
+  if (Array.isArray(weather) && weather.length) active = weather[0];
+  else if (weather && typeof weather === 'object') active = Object.keys(weather).find(k => weather[k]) || '';
+  else if (typeof weather === 'string') active = weather;
 
-  if (Array.isArray(weather) && weather.length > 0) {
-    activeWeather = weather[0];
-  } else if (typeof weather === 'object' && weather !== null) {
-    activeWeather = Object.keys(weather).find(k => weather[k]) || '';
-  } else if (typeof weather === 'string') {
-    activeWeather = weather;
-  }
-
-  const emoji = emojis.weather[activeWeather] ?? '🌤️';
-
+  const emoji = emojis.weather[active] ?? '🌤️';
   const embed = new EmbedBuilder()
     .setTitle('🌦️ Current Weather')
-    .setDescription(`${emoji} **${activeWeather}** is now active in Grow a Garden!`)
+    .setDescription(`${emoji} **${active}** is now active in Grow a Garden!`)
     .setColor('#87CEEB')
     .setTimestamp();
 
   await channel.send({ embeds: [embed] });
 }
 
-// Stock Embed bauen
 function buildStockEmbed(stockData) {
   const embed = new EmbedBuilder()
     .setTitle('🌾 Grow a Garden — Current Stock')
@@ -251,32 +226,32 @@ function buildStockEmbed(stockData) {
     .setTimestamp();
 
   if (Array.isArray(stockData.seedsStock)) {
-    const seedsText = stockData.seedsStock
-      .map(item => `${emojis.seeds[item.name] || '🌱'} **${item.name}**: \`${item.value.toLocaleString()}\``)
-      .join('\n');
-    embed.addFields({ name: '🌱 Seeds', value: seedsText, inline: true });
+    embed.addFields({
+      name: '🌱 Seeds',
+      value: stockData.seedsStock.map(i => `${emojis.seeds[i.name] || '🌱'} **${i.name}**: \`${i.value.toLocaleString()}\``).join('\n'),
+      inline: true,
+    });
   }
-
   if (Array.isArray(stockData.eggStock)) {
-    const eggsText = stockData.eggStock
-      .map(item => `${emojis.eggs[item.name] || '🥚'} **${item.name}**: \`${item.value.toLocaleString()}\``)
-      .join('\n');
-    embed.addFields({ name: '🥚 Eggs', value: eggsText, inline: true });
+    embed.addFields({
+      name: '🥚 Eggs',
+      value: stockData.eggStock.map(i => `${emojis.eggs[i.name] || '🥚'} **${i.name}**: \`${i.value.toLocaleString()}\``).join('\n'),
+      inline: true,
+    });
   }
-
   if (Array.isArray(stockData.gearStock)) {
-    const gearText = stockData.gearStock
-      .map(item => `${emojis.gear[item.name] || '🛠️'} **${item.name}**: \`${item.value.toLocaleString()}\``)
-      .join('\n');
-    embed.addFields({ name: '🛠️ Gear', value: gearText, inline: true });
+    embed.addFields({
+      name: '🛠️ Gear',
+      value: stockData.gearStock.map(i => `${emojis.gear[i.name] || '🛠️'} **${i.name}**: \`${i.value.toLocaleString()}\``).join('\n'),
+      inline: true,
+    });
   }
-
   return embed;
 }
 
-// Einfacher Objektvergleich
-function isEqual(obj1, obj2) {
-  return JSON.stringify(obj1) === JSON.stringify(obj2);
+function isEqual(a, b) {
+  try { return JSON.stringify(a) === JSON.stringify(b); }
+  catch { return false; }
 }
 
 client.login(TOKEN);
