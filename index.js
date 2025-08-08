@@ -64,7 +64,7 @@ client.on('interactionCreate', async interaction => {
         fetchWeatherData()
       ]);
       await interaction.editReply({
-        embeds: [buildStockEmbed(stockData), buildWeatherEmbed(weatherData.weather)]
+        embeds: [buildStockEmbed(stockData), buildWeatherEmbed(extractActiveWeather(weatherData.weather))]
       });
     } catch (e) {
       console.error('Fehler bei /stock:', e);
@@ -99,18 +99,26 @@ async function fetchAndSetInitialData() {
 function extractActiveWeather(weatherObj) {
   return Object.entries(weatherObj)
     .filter(([, active]) => active)
-    .map(([name]) => name);
+    .map(([name]) => name)
+    .sort(); // sortieren, damit Vergleich stabil ist
 }
 
 async function scheduleStockUpdate() {
   const now = new Date();
-  const next5min = new Date(now);
-  next5min.setSeconds(0);
-  next5min.setMilliseconds(0);
-  next5min.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
-  const delay = next5min - now;
 
-  console.log(`Nächste Stock-Überprüfung in ${Math.round(delay / 1000)} Sekunden um ${next5min.toLocaleTimeString()}`);
+  // nächstes 5-Minuten-Vielfaches plus 30 Sekunden
+  const next = new Date(now);
+  next.setMilliseconds(0);
+  next.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
+  next.setSeconds(30);
+
+  // Wenn die Zeit schon vorbei ist (z.B. 10:30:40), dann nochmal 5 Minuten drauf
+  if (next <= now) {
+    next.setMinutes(next.getMinutes() + 5);
+  }
+
+  const delay = next - now;
+  console.log(`Nächste Stock-Überprüfung in ${Math.round(delay / 1000)} Sekunden um ${next.toLocaleTimeString()}`);
 
   setTimeout(async () => {
     await checkStockChange();
@@ -125,6 +133,7 @@ async function checkStockChange() {
 
     const newStock = await fetchStockData();
 
+    // Deep-Vergleich über JSON.stringify - eventuell kannst du hier noch verbessern
     if (JSON.stringify(newStock) !== JSON.stringify(lastStock)) {
       await channel.send({ embeds: [buildStockEmbed(newStock)] });
       lastStock = newStock;
@@ -145,6 +154,7 @@ async function weatherUpdateLoop() {
     const weatherData = await fetchWeatherData();
     const activeWeather = extractActiveWeather(weatherData.weather);
 
+    // Sortieren für stabilen Vergleich
     if (JSON.stringify(activeWeather) !== JSON.stringify(lastWeather)) {
       lastWeather = activeWeather;
       await channel.send({ embeds: [buildWeatherEmbed(activeWeather)] });
