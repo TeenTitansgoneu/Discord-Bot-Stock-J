@@ -1,25 +1,15 @@
-const express = require('express');
-const app = express();
-
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActivityType } = require('discord.js');
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
-require('dotenv').config();
+import express from 'express';
+import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActivityType } from 'discord.js';
+import fetch from 'node-fetch';
+import dotenv from 'dotenv';
+dotenv.config();
 
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const CHANNEL_ID = process.env.CHANNEL_ID;
-
 const PORT = process.env.PORT || 3000;
 
-// Express-Server für Healthcheck (Render benötigt offenen Port)
-app.get('/', (req, res) => res.send('Bot läuft'));
-app.listen(PORT, () => console.log(`Express Server läuft auf Port ${PORT}`));
-
-// Discord-Client initialisieren
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-
-// Emojis für Embeds
 const emojis = {
   seeds: { Carrot: '🥕', Daffodil: '🌼', Strawberry: '🍓', Tomato: '🍅', Blueberry: '🫐' },
   eggs: { Common: '🥚', Rare: '🐣', Epic: '🐤', Legendary: '🐥' },
@@ -27,7 +17,15 @@ const emojis = {
   weather: { Sunny: '☀️', Rainy: '🌧️', Cloudy: '☁️', Stormy: '⛈️', Snowy: '❄️', Windy: '🌬️', Foggy: '🌫️' },
 };
 
-// Slash Command Registrierung
+// Express-Server (Healthcheck)
+const app = express();
+app.get('/', (req, res) => res.send('Bot läuft'));
+app.listen(PORT, () => console.log(`Express Server läuft auf Port ${PORT}`));
+
+// Discord-Client
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
+// Slash Command Setup
 const commands = [
   new SlashCommandBuilder()
     .setName('stock')
@@ -35,7 +33,6 @@ const commands = [
     .toJSON()
 ];
 const rest = new REST({ version: '10' }).setToken(TOKEN);
-
 (async () => {
   try {
     console.log('Slash commands werden registriert...');
@@ -46,7 +43,7 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
   }
 })();
 
-// Variablen zum Speichern des letzten Status
+// Status halten
 let lastStock = null;
 let lastWeather = null;
 
@@ -72,7 +69,10 @@ client.on('interactionCreate', async interaction => {
     try {
       const [stockData, weatherData] = await Promise.all([fetchStockData(), fetchWeatherData()]);
       await interaction.editReply({
-        embeds: [buildStockEmbed(stockData), buildWeatherEmbed(extractActiveWeather(weatherData.weather))],
+        embeds: [
+          buildStockEmbed(stockData),
+          buildWeatherEmbed(extractActiveWeather(weatherData.weather))
+        ],
       });
     } catch (e) {
       console.error('Fehler bei /stock:', e);
@@ -106,7 +106,6 @@ async function fetchAndSetInitialData() {
   }
 }
 
-// Holt aus dem Wetterobjekt nur die aktiven Wettertypen als Array
 function extractActiveWeather(weatherObj) {
   if (!weatherObj || typeof weatherObj !== 'object') return [];
   return Object.entries(weatherObj)
@@ -114,28 +113,22 @@ function extractActiveWeather(weatherObj) {
     .map(([name]) => name);
 }
 
-// Sendet alle 5 Minuten + 30 Sekunden Stock-Updates
 async function scheduleStockUpdate() {
   const now = new Date();
   const next = new Date(now);
   next.setSeconds(30);
   next.setMilliseconds(0);
-
-  // Wenn die Zeit schon vorbei ist, addiere 5 Minuten
-  if (next <= now) {
-    next.setMinutes(next.getMinutes() + 5);
-  }
+  if (next <= now) next.setMinutes(next.getMinutes() + 5);
 
   const delay = next - now;
   console.log(`Nächste Stock-Überprüfung in ${Math.round(delay / 1000)} Sekunden um ${next.toLocaleTimeString()}`);
 
   setTimeout(async () => {
     await checkStockChange();
-    scheduleStockUpdate(); // rekursiv neu planen
+    scheduleStockUpdate();
   }, delay);
 }
 
-// Prüft, ob sich der Stock geändert hat und sendet ggf. Nachricht
 async function checkStockChange() {
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
@@ -143,7 +136,6 @@ async function checkStockChange() {
 
     const newStock = await fetchStockData();
 
-    // Prüfen, ob sich Stock geändert hat (JSON String Vergleich)
     if (JSON.stringify(newStock) !== JSON.stringify(lastStock)) {
       await channel.send({ embeds: [buildStockEmbed(newStock)] });
       lastStock = newStock;
@@ -156,7 +148,6 @@ async function checkStockChange() {
   }
 }
 
-// Alle 30 Sekunden Wetter prüfen und bei Änderung Nachricht senden
 async function weatherUpdateLoop() {
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
@@ -177,7 +168,6 @@ async function weatherUpdateLoop() {
   }
 }
 
-// Embed für Stock-Daten
 function buildStockEmbed(stock) {
   const embed = new EmbedBuilder()
     .setTitle('🌾 Grow a Garden - Aktueller Stock')
@@ -206,10 +196,28 @@ function buildStockEmbed(stock) {
       inline: true,
     });
   }
+
+  // Zusätzliche Infos zum Restock (optional)
+  if (stock.restockTimers) {
+    embed.addFields({
+      name: '⏳ Restock Timer (Sekunden)',
+      value: Object.entries(stock.restockTimers).map(([cat, sec]) => `**${cat}**: \`${(sec / 1000).toFixed(1)}s\``).join('\n'),
+      inline: true,
+    });
+  }
+
+  if (stock.categoryRefreshStatus) {
+    embed.addFields({
+      name: '🔄 Kategorie Refresh Status',
+      value: Object.entries(stock.categoryRefreshStatus)
+        .map(([cat, info]) => `**${cat}**: ${info.wasRefreshed ? '✔️' : '❌'} (vor ${Math.floor(info.timeSinceRefresh/1000)}s)`).join('\n'),
+      inline: true,
+    });
+  }
+
   return embed;
 }
 
-// Embed für Wetter-Daten
 function buildWeatherEmbed(weatherArray) {
   if (!Array.isArray(weatherArray) || weatherArray.length === 0) {
     return new EmbedBuilder()
