@@ -1,3 +1,6 @@
+const express = require('express');
+const app = express();
+
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActivityType } = require('discord.js');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 require('dotenv').config();
@@ -7,17 +10,16 @@ const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
+const PORT = process.env.PORT || 3000;
+
+// Express-Server für Healthcheck (Render benötigt offenen Port)
+app.get('/', (req, res) => res.send('Bot läuft'));
+app.listen(PORT, () => console.log(`Express Server läuft auf Port ${PORT}`));
+
+// Discord-Client initialisieren
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-const commands = [
-  new SlashCommandBuilder()
-    .setName('stock')
-    .setDescription('Zeigt aktuellen Grow a Garden Stock und Wetter an')
-    .toJSON()
-];
-
-const rest = new REST({ version: '10' }).setToken(TOKEN);
-
+// Emojis für Embeds
 const emojis = {
   seeds: { Carrot: '🥕', Daffodil: '🌼', Strawberry: '🍓', Tomato: '🍅', Blueberry: '🫐' },
   eggs: { Common: '🥚', Rare: '🐣', Epic: '🐤', Legendary: '🐥' },
@@ -25,8 +27,14 @@ const emojis = {
   weather: { Sunny: '☀️', Rainy: '🌧️', Cloudy: '☁️', Stormy: '⛈️', Snowy: '❄️', Windy: '🌬️', Foggy: '🌫️' },
 };
 
-let lastStock = null;
-let lastWeather = null;
+// Slash Command Registrierung
+const commands = [
+  new SlashCommandBuilder()
+    .setName('stock')
+    .setDescription('Zeigt aktuellen Grow a Garden Stock und Wetter an')
+    .toJSON()
+];
+const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 (async () => {
   try {
@@ -37,6 +45,10 @@ let lastWeather = null;
     console.error('Fehler beim Registrieren der Commands:', e);
   }
 })();
+
+// Variablen zum Speichern des letzten Status
+let lastStock = null;
+let lastWeather = null;
 
 client.once('ready', async () => {
   console.log(`Bot ist online als ${client.user.tag}`);
@@ -57,14 +69,10 @@ client.on('interactionCreate', async interaction => {
 
   if (interaction.commandName === 'stock') {
     await interaction.deferReply();
-
     try {
-      const [stockData, weatherData] = await Promise.all([
-        fetchStockData(),
-        fetchWeatherData()
-      ]);
+      const [stockData, weatherData] = await Promise.all([fetchStockData(), fetchWeatherData()]);
       await interaction.editReply({
-        embeds: [buildStockEmbed(stockData), buildWeatherEmbed(extractActiveWeather(weatherData.weather))]
+        embeds: [buildStockEmbed(stockData), buildWeatherEmbed(extractActiveWeather(weatherData.weather))],
       });
     } catch (e) {
       console.error('Fehler bei /stock:', e);
@@ -72,6 +80,8 @@ client.on('interactionCreate', async interaction => {
     }
   }
 });
+
+// --- Funktionen ---
 
 async function fetchStockData() {
   const res = await fetch('https://growagarden.gg/api/stock');
@@ -96,23 +106,22 @@ async function fetchAndSetInitialData() {
   }
 }
 
+// Holt aus dem Wetterobjekt nur die aktiven Wettertypen als Array
 function extractActiveWeather(weatherObj) {
+  if (!weatherObj || typeof weatherObj !== 'object') return [];
   return Object.entries(weatherObj)
-    .filter(([, active]) => active)
-    .map(([name]) => name)
-    .sort(); // sortieren, damit Vergleich stabil ist
+    .filter(([, active]) => active === true)
+    .map(([name]) => name);
 }
 
+// Sendet alle 5 Minuten + 30 Sekunden Stock-Updates
 async function scheduleStockUpdate() {
   const now = new Date();
-
-  // nächstes 5-Minuten-Vielfaches plus 30 Sekunden
   const next = new Date(now);
-  next.setMilliseconds(0);
-  next.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
   next.setSeconds(30);
+  next.setMilliseconds(0);
 
-  // Wenn die Zeit schon vorbei ist (z.B. 10:30:40), dann nochmal 5 Minuten drauf
+  // Wenn die Zeit schon vorbei ist, addiere 5 Minuten
   if (next <= now) {
     next.setMinutes(next.getMinutes() + 5);
   }
@@ -122,10 +131,11 @@ async function scheduleStockUpdate() {
 
   setTimeout(async () => {
     await checkStockChange();
-    scheduleStockUpdate();
+    scheduleStockUpdate(); // rekursiv neu planen
   }, delay);
 }
 
+// Prüft, ob sich der Stock geändert hat und sendet ggf. Nachricht
 async function checkStockChange() {
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
@@ -133,7 +143,7 @@ async function checkStockChange() {
 
     const newStock = await fetchStockData();
 
-    // Deep-Vergleich über JSON.stringify - eventuell kannst du hier noch verbessern
+    // Prüfen, ob sich Stock geändert hat (JSON String Vergleich)
     if (JSON.stringify(newStock) !== JSON.stringify(lastStock)) {
       await channel.send({ embeds: [buildStockEmbed(newStock)] });
       lastStock = newStock;
@@ -146,6 +156,7 @@ async function checkStockChange() {
   }
 }
 
+// Alle 30 Sekunden Wetter prüfen und bei Änderung Nachricht senden
 async function weatherUpdateLoop() {
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
@@ -154,7 +165,6 @@ async function weatherUpdateLoop() {
     const weatherData = await fetchWeatherData();
     const activeWeather = extractActiveWeather(weatherData.weather);
 
-    // Sortieren für stabilen Vergleich
     if (JSON.stringify(activeWeather) !== JSON.stringify(lastWeather)) {
       lastWeather = activeWeather;
       await channel.send({ embeds: [buildWeatherEmbed(activeWeather)] });
@@ -167,12 +177,13 @@ async function weatherUpdateLoop() {
   }
 }
 
+// Embed für Stock-Daten
 function buildStockEmbed(stock) {
   const embed = new EmbedBuilder()
     .setTitle('🌾 Grow a Garden - Aktueller Stock')
     .setColor('#2ecc71')
     .setTimestamp()
-    .setFooter({ text: 'Updates alle 5 Minuten' });
+    .setFooter({ text: 'Updates alle 5 Minuten + 30 Sekunden' });
 
   if (Array.isArray(stock.seedsStock)) {
     embed.addFields({
@@ -198,6 +209,7 @@ function buildStockEmbed(stock) {
   return embed;
 }
 
+// Embed für Wetter-Daten
 function buildWeatherEmbed(weatherArray) {
   if (!Array.isArray(weatherArray) || weatherArray.length === 0) {
     return new EmbedBuilder()
