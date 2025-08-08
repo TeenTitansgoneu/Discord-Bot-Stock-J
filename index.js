@@ -2,6 +2,7 @@ import express from 'express';
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActivityType } from 'discord.js';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
+
 dotenv.config();
 
 const TOKEN = process.env.TOKEN;
