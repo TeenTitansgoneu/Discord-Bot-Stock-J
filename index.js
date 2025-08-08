@@ -234,5 +234,3 @@ function isEqual(obj1, obj2) {
 
 // Login
 client.login(TOKEN);
-
-// Test-Update
