@@ -13,26 +13,21 @@ const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fet
 
 require('dotenv').config();
 
-// Env-Variablen
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
-// Discord Client initialisieren
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// Slash Command Definition
 const commands = [
   new SlashCommandBuilder()
     .setName('stock')
     .setDescription('Show current Grow a Garden stock and weather status'),
 ].map(cmd => cmd.toJSON());
 
-// REST API Client für Command-Registration
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
-// Emojis für verschiedene Kategorien
 const emojis = {
   seeds: { Carrot: '🥕', Daffodil: '🌼', Strawberry: '🍓', Tomato: '🍅', Blueberry: '🫐' },
   eggs: { Common: '🥚', Rare: '🐣', Epic: '🐤', Legendary: '🐥' },
@@ -43,7 +38,7 @@ const emojis = {
 let lastStockData = null;
 let lastWeatherData = null;
 
-// Registrierung der Slash Commands
+// Slash commands registrieren
 (async () => {
   try {
     console.log('📦 Registering slash commands...');
@@ -54,25 +49,23 @@ let lastWeatherData = null;
   }
 })();
 
-// Event: Bot bereit
 client.once('ready', () => {
   console.log(`🤖 Logged in as ${client.user.tag}!`);
 
-  // Status & Aktivität setzen
   client.user.setPresence({
-    status: 'dnd', // online, idle, dnd, invisible
-    activities: [
-      {
-        name: 'Grow a Garden 🌱',
-        type: ActivityType.Playing, // z.B. Playing, Watching, Listening, Streaming
-      },
-    ],
+    status: 'dnd',
+    activities: [{ name: 'Grow a Garden 🌱', type: ActivityType.Playing }],
   });
-  initializeData()
-    .then(() => scheduleNextCheck());
+
+  initializeData().then(() => {
+    // Stock alle 5 Minuten + 30 Sek
+    scheduleStockCheck();
+
+    // Wetter alle 30 Sekunden prüfen
+    setInterval(checkWeatherLoop, 30 * 1000);
+  });
 });
 
-// Event: Interaktion mit Slash Command
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -86,8 +79,9 @@ client.on('interactionCreate', async interaction => {
       ]);
 
       const stockEmbed = buildStockEmbed(stockData);
-      await interaction.editReply({ embeds: [stockEmbed] });
+      const weatherEmbed = buildWeatherEmbed(weatherData.weather);
 
+      await interaction.editReply({ embeds: [stockEmbed, weatherEmbed] });
     } catch (error) {
       console.error('❌ Error handling /stock command:', error);
       await interaction.editReply('⚠️ Unable to fetch data right now. Please try again later.');
@@ -95,7 +89,7 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// Hilfsfunktion: API-Daten holen
+// API Daten holen
 async function fetchData(type) {
   const url = `https://growagarden.gg/api/${type}`;
   const response = await fetch(url);
@@ -114,8 +108,8 @@ async function initializeData() {
   }
 }
 
-// Alle 5 Minuten plus 30 Sekunden auf Updates prüfen
-function scheduleNextCheck() {
+// Stock alle 5 Minuten + 30 Sekunden prüfen (zeitgesteuert)
+function scheduleStockCheck() {
   const now = new Date();
   const nextFiveMin = new Date(now);
 
@@ -126,21 +120,20 @@ function scheduleNextCheck() {
 
   const delay = nextFiveMin.getTime() - now.getTime();
 
-  console.log(`⏳ Next check in ${Math.round(delay / 1000)} seconds at ${nextFiveMin.toLocaleTimeString()}`);
+  console.log(`⏳ Next stock check in ${Math.round(delay / 1000)} seconds at ${nextFiveMin.toLocaleTimeString()}`);
 
   setTimeout(async () => {
-    await checkForUpdates();
-    scheduleNextCheck();
+    await checkStockUpdate();
+    scheduleStockCheck();
   }, delay);
 }
 
-// Prüfe auf Änderungen bei Lagerbestand und Wetter
-async function checkForUpdates() {
+async function checkStockUpdate() {
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
     if (!channel) throw new Error('Channel not found');
 
-    const [stockData, weatherData] = await Promise.all([fetchData('stock'), fetchData('weather')]);
+    const stockData = await fetchData('stock');
 
     if (!isEqual(lastStockData, stockData)) {
       await channel.send({ embeds: [buildStockEmbed(stockData)] });
@@ -149,21 +142,33 @@ async function checkForUpdates() {
     } else {
       console.log('No stock changes.');
     }
-
-    if (!isEqual(lastWeatherData, weatherData.weather)) {
-      await sendWeatherEmbeds(channel, weatherData.weather);
-      lastWeatherData = weatherData.weather;
-      console.log('🌦️ Weather updated, message sent.');
-    } else {
-      console.log('No weather changes.');
-    }
   } catch (error) {
-    console.error('❌ Error during update check:', error);
+    console.error('❌ Error during stock update check:', error);
   }
 }
 
-// Wetter-Embed(s) senden (in nur einer Nachricht)
-async function sendWeatherEmbeds(channel, weather) {
+// Wetter Loop alle 30 Sekunden
+async function checkWeatherLoop() {
+  try {
+    const channel = await client.channels.fetch(CHANNEL_ID);
+    if (!channel) throw new Error('Channel not found');
+
+    const weatherData = await fetchData('weather');
+
+    if (!isEqual(lastWeatherData, weatherData.weather)) {
+      lastWeatherData = weatherData.weather;
+      await sendSingleWeatherEmbed(channel, weatherData.weather);
+      console.log('🌦️ New weather detected & message sent.');
+    } else {
+      //console.log('No weather changes.');
+    }
+  } catch (error) {
+    console.error('❌ Weather check error:', error);
+  }
+}
+
+// Wetter-Embed für Slash Command
+function buildWeatherEmbed(weather) {
   let weatherDescriptions = [];
 
   if (Array.isArray(weather)) {
@@ -183,16 +188,37 @@ async function sendWeatherEmbeds(channel, weather) {
     weatherDescriptions.push(`${emoji} **${weather}**`);
   }
 
-  const embed = new EmbedBuilder()
-    .setTitle('☁️ Weather Update')
+  return new EmbedBuilder()
+    .setTitle('☁️ Weather Status')
     .setDescription(weatherDescriptions.join('\n'))
+    .setColor('#87CEEB')
+    .setTimestamp();
+}
+
+// Einzelnen Wetter-Embed senden (bei Änderung)
+async function sendSingleWeatherEmbed(channel, weather) {
+  let activeWeather = '';
+
+  if (Array.isArray(weather) && weather.length > 0) {
+    activeWeather = weather[0];
+  } else if (typeof weather === 'object') {
+    activeWeather = Object.keys(weather).find(k => weather[k]) || '';
+  } else if (typeof weather === 'string') {
+    activeWeather = weather;
+  }
+
+  const emoji = emojis.weather[activeWeather] || '🌤️';
+
+  const embed = new EmbedBuilder()
+    .setTitle('🌦️ Current Weather')
+    .setDescription(`${emoji} **${activeWeather}** is now active in Grow a Garden!`)
     .setColor('#87CEEB')
     .setTimestamp();
 
   await channel.send({ embeds: [embed] });
 }
 
-// Lagerbestand Embed erstellen (übersichtlich)
+// Stock Embed bauen
 function buildStockEmbed(stockData) {
   const embed = new EmbedBuilder()
     .setTitle('🌾 Grow a Garden — Current Stock')
@@ -200,7 +226,6 @@ function buildStockEmbed(stockData) {
     .setFooter({ text: 'Updated every 5 minutes' })
     .setTimestamp();
 
-  // Seeds
   if (Array.isArray(stockData.seedsStock)) {
     const seedsText = stockData.seedsStock
       .map(item => `${emojis.seeds[item.name] || '🌱'} **${item.name}**: \`${item.value.toLocaleString()}\``)
@@ -208,7 +233,6 @@ function buildStockEmbed(stockData) {
     embed.addFields({ name: '🌱 Seeds', value: seedsText, inline: true });
   }
 
-  // Eggs
   if (Array.isArray(stockData.eggStock)) {
     const eggsText = stockData.eggStock
       .map(item => `${emojis.eggs[item.name] || '🥚'} **${item.name}**: \`${item.value.toLocaleString()}\``)
@@ -216,7 +240,6 @@ function buildStockEmbed(stockData) {
     embed.addFields({ name: '🥚 Eggs', value: eggsText, inline: true });
   }
 
-  // Gear
   if (Array.isArray(stockData.gearStock)) {
     const gearText = stockData.gearStock
       .map(item => `${emojis.gear[item.name] || '🛠️'} **${item.name}**: \`${item.value.toLocaleString()}\``)
@@ -227,10 +250,9 @@ function buildStockEmbed(stockData) {
   return embed;
 }
 
-// Einfache tiefgehende Objekt-Vergleichsfunktion
+// Einfacher Objektvergleich
 function isEqual(obj1, obj2) {
   return JSON.stringify(obj1) === JSON.stringify(obj2);
 }
 
-// Login
 client.login(TOKEN);
