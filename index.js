@@ -1,27 +1,5 @@
-const express = require('express');
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.get('/', (req, res) => {
-  res.send('Bot läuft!');
-});
-
-app.listen(PORT, () => {
-  console.log(`Server läuft auf Port ${PORT}`);
-});
-
-const {
-  Client,
-  GatewayIntentBits,
-  REST,
-  Routes,
-  SlashCommandBuilder,
-  EmbedBuilder,
-  ActivityType,
-} = require('discord.js');
-
-const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
-
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, EmbedBuilder, ActivityType } = require('discord.js');
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 require('dotenv').config();
 
 const TOKEN = process.env.TOKEN;
@@ -34,8 +12,9 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const commands = [
   new SlashCommandBuilder()
     .setName('stock')
-    .setDescription('Show current Grow a Garden stock and weather status'),
-].map(cmd => cmd.toJSON());
+    .setDescription('Zeigt aktuellen Grow a Garden Stock und Wetter an')
+    .toJSON()
+];
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 
@@ -46,240 +25,184 @@ const emojis = {
   weather: { Sunny: '☀️', Rainy: '🌧️', Cloudy: '☁️', Stormy: '⛈️', Snowy: '❄️', Windy: '🌬️', Foggy: '🌫️' },
 };
 
-let lastStockData = null;
-let lastWeatherData = null;
+let lastStock = null;
+let lastWeather = null;
 
 (async () => {
   try {
-    console.log('📦 Registering slash commands...');
+    console.log('Slash commands werden registriert...');
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-    console.log('✅ Slash commands registered!');
-  } catch (error) {
-    console.error('❌ Error registering commands:', error);
+    console.log('Slash commands registriert!');
+  } catch (e) {
+    console.error('Fehler beim Registrieren der Commands:', e);
   }
 })();
 
 client.once('ready', async () => {
-  console.log(`🤖 Logged in as ${client.user.tag}!`);
+  console.log(`Bot ist online als ${client.user.tag}`);
 
   client.user.setPresence({
-    status: 'dnd',
+    status: 'online',
     activities: [{ name: 'Grow a Garden 🌱', type: ActivityType.Playing }],
   });
 
-  await initializeData();
+  await fetchAndSetInitialData();
 
-  scheduleStockCheck();
-  setInterval(checkWeatherLoop, 30 * 1000);
+  scheduleStockUpdate();
+  setInterval(weatherUpdateLoop, 30_000);
 });
 
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'stock') {
+    await interaction.deferReply();
+
     try {
-      await interaction.deferReply();
-
       const [stockData, weatherData] = await Promise.all([
-        fetchData('stock'),
-        fetchData('weather'),
+        fetchStockData(),
+        fetchWeatherData()
       ]);
-
-      const stockEmbed = buildStockEmbed(stockData);
-      const weatherEmbed = buildWeatherEmbed(weatherData.weather);
-
-      await interaction.editReply({ embeds: [stockEmbed, weatherEmbed] });
-    } catch (error) {
-      console.error('❌ Error handling /stock command:', error);
-      try {
-        if (interaction.deferred || interaction.replied) {
-          await interaction.followUp('⚠️ Unable to fetch data right now. Please try again later.');
-        } else {
-          await interaction.reply('⚠️ Unable to fetch data right now. Please try again later.');
-        }
-      } catch (replyError) {
-        console.error('❌ Failed to send error message:', replyError);
-      }
+      await interaction.editReply({
+        embeds: [buildStockEmbed(stockData), buildWeatherEmbed(weatherData.weather)]
+      });
+    } catch (e) {
+      console.error('Fehler bei /stock:', e);
+      await interaction.editReply('Fehler beim Abrufen der Daten.');
     }
   }
 });
 
-async function fetchData(type) {
-  const url = `https://growagarden.gg/api/${type}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed fetching ${type} data: ${response.status}`);
-  const data = await response.json();
-  return data;
+async function fetchStockData() {
+  const res = await fetch('https://growagarden.gg/stocks');
+  if (!res.ok) throw new Error('Fehler beim Abrufen der Stocks');
+  return res.json();
 }
 
-async function initializeData() {
+async function fetchWeatherData() {
+  const res = await fetch('https://growagarden.gg/api/weather');
+  if (!res.ok) throw new Error('Fehler beim Abrufen des Wetters');
+  return res.json();
+}
+
+async function fetchAndSetInitialData() {
   try {
-    const [stockData, weatherData] = await Promise.all([fetchData('stock'), fetchData('weather')]);
-    lastStockData = stockData;
-    lastWeatherData = extractWeather(weatherData);
-    console.log('✅ Initial data loaded.');
-  } catch (error) {
-    console.error('❌ Error during initial data fetch:', error);
+    lastStock = await fetchStockData();
+    const weatherData = await fetchWeatherData();
+    lastWeather = extractActiveWeather(weatherData.weather);
+    console.log('Initiale Daten geladen');
+  } catch (e) {
+    console.error('Fehler beim initialen Laden der Daten:', e);
   }
 }
 
-function scheduleStockCheck() {
+function extractActiveWeather(weatherObj) {
+  return Object.entries(weatherObj)
+    .filter(([, active]) => active)
+    .map(([name]) => name);
+}
+
+async function scheduleStockUpdate() {
   const now = new Date();
-  const nextFiveMin = new Date(now);
+  const next5min = new Date(now);
+  next5min.setSeconds(0);
+  next5min.setMilliseconds(0);
+  next5min.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
+  const delay = next5min - now;
 
-  nextFiveMin.setMilliseconds(0);
-  nextFiveMin.setSeconds(30);
-  nextFiveMin.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
-
-  const delay = nextFiveMin.getTime() - now.getTime();
-
-  console.log(`⏳ Next stock check in ${Math.round(delay / 1000)} seconds at ${nextFiveMin.toLocaleTimeString()}`);
+  console.log(`Nächste Stock-Überprüfung in ${Math.round(delay / 1000)} Sekunden um ${next5min.toLocaleTimeString()}`);
 
   setTimeout(async () => {
-    await checkStockUpdate();
-    scheduleStockCheck();
+    await checkStockChange();
+    scheduleStockUpdate();
   }, delay);
 }
 
-async function checkStockUpdate() {
+async function checkStockChange() {
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
-    if (!channel) throw new Error('Channel not found');
+    if (!channel) throw new Error('Channel nicht gefunden');
 
-    const stockData = await fetchData('stock');
+    const newStock = await fetchStockData();
 
-    if (!isEqual(lastStockData, stockData)) {
-      await channel.send({ embeds: [buildStockEmbed(stockData)] });
-      lastStockData = stockData;
-      console.log('📢 Stock updated, message sent.');
+    if (JSON.stringify(newStock) !== JSON.stringify(lastStock)) {
+      await channel.send({ embeds: [buildStockEmbed(newStock)] });
+      lastStock = newStock;
+      console.log('Stock hat sich geändert, Nachricht gesendet');
     } else {
-      console.log('No stock changes.');
+      console.log('Keine Änderung beim Stock');
     }
-  } catch (error) {
-    console.error('❌ Error during stock update check:', error);
+  } catch (e) {
+    console.error('Fehler beim Prüfen des Stocks:', e);
   }
 }
 
-async function checkWeatherLoop() {
+async function weatherUpdateLoop() {
   try {
     const channel = await client.channels.fetch(CHANNEL_ID);
-    if (!channel) throw new Error('Channel not found');
+    if (!channel) throw new Error('Channel nicht gefunden');
 
-    const weatherData = await fetchData('weather');
-    const currentWeather = extractWeather(weatherData);
+    const weatherData = await fetchWeatherData();
+    const activeWeather = extractActiveWeather(weatherData.weather);
 
-    console.log('🌦️ Fetched weather data:', currentWeather);
-    console.log('🌤️ Last weather data:', lastWeatherData);
-
-    if (!isEqual(lastWeatherData, currentWeather)) {
-      lastWeatherData = currentWeather;
-      await sendSingleWeatherEmbed(channel, currentWeather);
-      console.log('🌦️ New weather detected & message sent.');
+    if (JSON.stringify(activeWeather) !== JSON.stringify(lastWeather)) {
+      lastWeather = activeWeather;
+      await channel.send({ embeds: [buildWeatherEmbed(activeWeather)] });
+      console.log('Wetter hat sich geändert, Nachricht gesendet');
     } else {
-      console.log('🌤️ Weather unchanged, no message sent.');
+      console.log('Wetter unverändert');
     }
-  } catch (error) {
-    console.error('❌ Weather check error:', error);
+  } catch (e) {
+    console.error('Fehler bei Wetter-Update:', e);
   }
 }
 
-function extractWeather(weatherData) {
-  // Die API liefert Wetter als Array oder Objekt mit true/false Werten
-  if (!weatherData || typeof weatherData !== 'object') return [];
-
-  if (Array.isArray(weatherData.weather)) {
-    return weatherData.weather;
-  }
-
-  if (typeof weatherData.weather === 'object' && weatherData.weather !== null) {
-    return Object.entries(weatherData.weather)
-      .filter(([, value]) => value)
-      .map(([key]) => key);
-  }
-
-  if (typeof weatherData.weather === 'string') {
-    return [weatherData.weather];
-  }
-
-  // Fallback leer
-  return [];
-}
-
-function buildWeatherEmbed(weatherArr) {
-  let weatherDescriptions = [];
-
-  if (Array.isArray(weatherArr) && weatherArr.length > 0) {
-    for (const w of weatherArr) {
-      const emoji = emojis.weather[w] ?? '🌤️';
-      weatherDescriptions.push(`${emoji} **${w}**`);
-    }
-  } else {
-    weatherDescriptions.push('🌤️ **No Weather Data**');
-  }
-
-  return new EmbedBuilder()
-    .setTitle('☁️ Weather Status')
-    .setDescription(weatherDescriptions.join('\n'))
-    .setColor('#87CEEB')
-    .setTimestamp();
-}
-
-async function sendSingleWeatherEmbed(channel, weatherArr) {
-  if (!Array.isArray(weatherArr) || weatherArr.length === 0) {
-    await channel.send({ embeds: [new EmbedBuilder()
-      .setTitle('🌦️ Current Weather')
-      .setDescription('🌤️ **No active weather in Grow a Garden right now!**')
-      .setColor('#87CEEB')
-      .setTimestamp()] });
-    return;
-  }
-
-  // Wir nehmen das erste Wetter-Element als Hauptwetter
-  const mainWeather = weatherArr[0];
-  const emoji = emojis.weather[mainWeather] ?? '🌤️';
-
+function buildStockEmbed(stock) {
   const embed = new EmbedBuilder()
-    .setTitle('🌦️ Current Weather')
-    .setDescription(`${emoji} **${mainWeather}** is now active in Grow a Garden!`)
-    .setColor('#87CEEB')
-    .setTimestamp();
-
-  await channel.send({ embeds: [embed] });
-}
-
-function buildStockEmbed(stockData) {
-  const embed = new EmbedBuilder()
-    .setTitle('🌾 Grow a Garden — Current Stock')
+    .setTitle('🌾 Grow a Garden - Aktueller Stock')
     .setColor('#2ecc71')
-    .setFooter({ text: 'Updated every 5 minutes' })
-    .setTimestamp();
+    .setTimestamp()
+    .setFooter({ text: 'Updates alle 5 Minuten' });
 
-  if (Array.isArray(stockData.seedsStock)) {
-    const seedsText = stockData.seedsStock
-      .map(item => `${emojis.seeds[item.name] || '🌱'} **${item.name}**: \`${item.value.toLocaleString()}\``)
-      .join('\n');
-    embed.addFields({ name: '🌱 Seeds', value: seedsText, inline: true });
+  if (Array.isArray(stock.seedsStock)) {
+    embed.addFields({
+      name: '🌱 Seeds',
+      value: stock.seedsStock.map(s => `${emojis.seeds[s.name] || '🌱'} **${s.name}**: \`${s.value.toLocaleString()}\``).join('\n'),
+      inline: true,
+    });
   }
-
-  if (Array.isArray(stockData.eggStock)) {
-    const eggsText = stockData.eggStock
-      .map(item => `${emojis.eggs[item.name] || '🥚'} **${item.name}**: \`${item.value.toLocaleString()}\``)
-      .join('\n');
-    embed.addFields({ name: '🥚 Eggs', value: eggsText, inline: true });
+  if (Array.isArray(stock.eggStock)) {
+    embed.addFields({
+      name: '🥚 Eggs',
+      value: stock.eggStock.map(e => `${emojis.eggs[e.name] || '🥚'} **${e.name}**: \`${e.value.toLocaleString()}\``).join('\n'),
+      inline: true,
+    });
   }
-
-  if (Array.isArray(stockData.gearStock)) {
-    const gearText = stockData.gearStock
-      .map(item => `${emojis.gear[item.name] || '🛠️'} **${item.name}**: \`${item.value.toLocaleString()}\``)
-      .join('\n');
-    embed.addFields({ name: '🛠️ Gear', value: gearText, inline: true });
+  if (Array.isArray(stock.gearStock)) {
+    embed.addFields({
+      name: '🛠️ Gear',
+      value: stock.gearStock.map(g => `${emojis.gear[g.name] || '🛠️'} **${g.name}**: \`${g.value.toLocaleString()}\``).join('\n'),
+      inline: true,
+    });
   }
-
   return embed;
 }
 
-function isEqual(obj1, obj2) {
-  return JSON.stringify(obj1) === JSON.stringify(obj2);
+function buildWeatherEmbed(weatherArray) {
+  if (!Array.isArray(weatherArray) || weatherArray.length === 0) {
+    return new EmbedBuilder()
+      .setTitle('🌦️ Aktuelles Wetter')
+      .setDescription('Kein aktives Wetter gerade.')
+      .setColor('#87CEEB')
+      .setTimestamp();
+  }
+
+  const desc = weatherArray.map(w => `${emojis.weather[w] || '🌤️'} **${w}**`).join('\n');
+  return new EmbedBuilder()
+    .setTitle('🌦️ Aktuelles Wetter')
+    .setDescription(desc)
+    .setColor('#87CEEB')
+    .setTimestamp();
 }
 
 client.login(TOKEN);
