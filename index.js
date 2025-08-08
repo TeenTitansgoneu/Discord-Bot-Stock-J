@@ -1,3 +1,15 @@
+const express = require('express');
+const app = express();
+
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => res.send('Bot läuft!'));
+
+app.listen(PORT, () => {
+  console.log(`Server läuft auf Port ${PORT}`);
+});
+
+
 const {
   Client,
   GatewayIntentBits,
@@ -58,7 +70,7 @@ client.once('ready', () => {
   });
 
   initializeData().then(() => {
-    // Stock alle 5 Minuten + 30 Sekunden (fix: setSeconds richtig setzen)
+    // Stock alle 5 Minuten + 30 Sek
     scheduleStockCheck();
 
     // Wetter alle 30 Sekunden prüfen
@@ -114,8 +126,9 @@ function scheduleStockCheck() {
   const nextFiveMin = new Date(now);
 
   nextFiveMin.setMilliseconds(0);
-  nextFiveMin.setSeconds(30); // Fix: Sekunden auf 30 setzen, nicht addieren
+  nextFiveMin.setSeconds(0);
   nextFiveMin.setMinutes(Math.floor(now.getMinutes() / 5) * 5 + 5);
+  nextFiveMin.setSeconds(nextFiveMin.getSeconds() + 30);
 
   const delay = nextFiveMin.getTime() - now.getTime();
 
@@ -172,24 +185,32 @@ function buildWeatherEmbed(weather) {
 
   if (Array.isArray(weather)) {
     for (const w of weather) {
-      const emoji = emojis.weather[w] || '🌤️';
-      weatherDescriptions.push(`${emoji} **${w}**`);
+      if (typeof w === 'string') {
+        const emoji = emojis.weather[w] ?? '🌤️';
+        weatherDescriptions.push(`${emoji} **${w}**`);
+      }
     }
   } else if (typeof weather === 'object' && weather !== null) {
     for (const key in weather) {
-      if (weather[key]) {
-        const emoji = emojis.weather[key] || '🌤️';
+      if (weather[key] && typeof key === 'string') {
+        const emoji = emojis.weather[key] ?? '🌤️';
         weatherDescriptions.push(`${emoji} **${key}**`);
       }
     }
-  } else {
-    const emoji = emojis.weather[weather] || '🌤️';
+  } else if (typeof weather === 'string') {
+    const emoji = emojis.weather[weather] ?? '🌤️';
     weatherDescriptions.push(`${emoji} **${weather}**`);
+  } else {
+    weatherDescriptions.push('🌤️ **Unknown Weather**');
+  }
+
+  if (weatherDescriptions.length === 0) {
+    weatherDescriptions.push('🌤️ **No Weather Data**');
   }
 
   return new EmbedBuilder()
     .setTitle('☁️ Weather Status')
-    .setDescription(weatherDescriptions.join('\n') || 'No weather data')
+    .setDescription(weatherDescriptions.join('\n'))
     .setColor('#87CEEB')
     .setTimestamp();
 }
@@ -206,7 +227,7 @@ async function sendSingleWeatherEmbed(channel, weather) {
     activeWeather = weather;
   }
 
-  const emoji = emojis.weather[activeWeather] || '🌤️';
+  const emoji = emojis.weather[activeWeather] ?? '🌤️';
 
   const embed = new EmbedBuilder()
     .setTitle('🌦️ Current Weather')
@@ -225,21 +246,21 @@ function buildStockEmbed(stockData) {
     .setFooter({ text: 'Updated every 5 minutes' })
     .setTimestamp();
 
-  if (Array.isArray(stockData.seedsStock) && stockData.seedsStock.length > 0) {
+  if (Array.isArray(stockData.seedsStock)) {
     const seedsText = stockData.seedsStock
       .map(item => `${emojis.seeds[item.name] || '🌱'} **${item.name}**: \`${item.value.toLocaleString()}\``)
       .join('\n');
     embed.addFields({ name: '🌱 Seeds', value: seedsText, inline: true });
   }
 
-  if (Array.isArray(stockData.eggStock) && stockData.eggStock.length > 0) {
+  if (Array.isArray(stockData.eggStock)) {
     const eggsText = stockData.eggStock
       .map(item => `${emojis.eggs[item.name] || '🥚'} **${item.name}**: \`${item.value.toLocaleString()}\``)
       .join('\n');
     embed.addFields({ name: '🥚 Eggs', value: eggsText, inline: true });
   }
 
-  if (Array.isArray(stockData.gearStock) && stockData.gearStock.length > 0) {
+  if (Array.isArray(stockData.gearStock)) {
     const gearText = stockData.gearStock
       .map(item => `${emojis.gear[item.name] || '🛠️'} **${item.name}**: \`${item.value.toLocaleString()}\``)
       .join('\n');
