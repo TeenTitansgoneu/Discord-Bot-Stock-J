@@ -74,7 +74,7 @@ client.on('interactionCreate', async interaction => {
 });
 
 async function fetchStockData() {
-  const res = await fetch('https://growagarden.gg/stocks');
+  const res = await fetch('https://growagarden.gg/api/stock');
   if (!res.ok) throw new Error('Fehler beim Abrufen der Stocks');
   return res.json();
 }
