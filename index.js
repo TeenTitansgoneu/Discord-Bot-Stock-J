@@ -12,7 +12,6 @@ app.listen(PORT, () => {
 
 // Hier dann dein Discord-Bot-Setup weiter
 
-
 const {
   Client,
   GatewayIntentBits,
