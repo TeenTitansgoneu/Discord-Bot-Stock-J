@@ -10,8 +10,6 @@ app.listen(PORT, () => {
   console.log(`Server läuft auf Port ${PORT}`);
 });
 
-// Hier dann dein Discord-Bot-Setup weiter
-
 const {
   Client,
   GatewayIntentBits,
@@ -72,10 +70,7 @@ client.once('ready', () => {
   });
 
   initializeData().then(() => {
-    // Stock alle 5 Minuten + 30 Sek
     scheduleStockCheck();
-
-    // Wetter alle 30 Sekunden prüfen
     setInterval(checkWeatherLoop, 30 * 1000);
   });
 });
@@ -84,9 +79,9 @@ client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   if (interaction.commandName === 'stock') {
-    await interaction.deferReply();
-
     try {
+      await interaction.deferReply();
+
       const [stockData, weatherData] = await Promise.all([
         fetchData('stock'),
         fetchData('weather'),
@@ -98,7 +93,15 @@ client.on('interactionCreate', async interaction => {
       await interaction.editReply({ embeds: [stockEmbed, weatherEmbed] });
     } catch (error) {
       console.error('❌ Error handling /stock command:', error);
-      await interaction.editReply('⚠️ Unable to fetch data right now. Please try again later.');
+      try {
+        if (interaction.deferred || interaction.replied) {
+          await interaction.followUp('⚠️ Unable to fetch data right now. Please try again later.');
+        } else {
+          await interaction.reply('⚠️ Unable to fetch data right now. Please try again later.');
+        }
+      } catch (replyError) {
+        console.error('❌ Failed to send error message:', replyError);
+      }
     }
   }
 });
@@ -107,10 +110,11 @@ client.on('interactionCreate', async interaction => {
 async function fetchData(type) {
   const url = `https://growagarden.gg/api/${type}`;
   const response = await fetch(url);
+  if (!response.ok) throw new Error(`Failed fetching ${type} data: ${response.status}`);
   return response.json();
 }
 
-// Initiale Daten laden, damit keine unnötigen Nachrichten gesendet werden
+// Initiale Daten laden
 async function initializeData() {
   try {
     const [stockData, weatherData] = await Promise.all([fetchData('stock'), fetchData('weather')]);
@@ -173,8 +177,6 @@ async function checkWeatherLoop() {
       lastWeatherData = weatherData.weather;
       await sendSingleWeatherEmbed(channel, weatherData.weather);
       console.log('🌦️ New weather detected & message sent.');
-    } else {
-      //console.log('No weather changes.');
     }
   } catch (error) {
     console.error('❌ Weather check error:', error);
